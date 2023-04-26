@@ -1,0 +1,185 @@
+// Loads the most recent/latest Excel doc from a shared drive folder
+
+//this creates a method "subroutine/sub" in qlik to do a process.  When it's called it loops over a folder collecting
+//file information on the files it contains.
+
+sub ListFile (Root, tableName)
+    
+    for each Ext in 'txt'//,'xlsx', 'qva', 'qvo', 'qvs', 'qvc', 'qvf', 'qvd'
+
+        for each File in filelist (Root&'\*.' &Ext)
+            [$(tableName)]:
+            LOAD 
+                Subfield('$(File)', '/', -1)								AS [FileName]
+                ,'$(File)'													AS [FileFullName]
+                ,FileSize( '$(File)' ) /1024 /1024							AS [Size (Mb)]
+                ,FileTime( '$(File)' )										AS [FileTime]
+                ,Subfield(Subfield('$(File)', '/', -1), '.', -1)			AS [FileExt]
+                ,Subfield('$(File)', '/', -2)								AS [FileDir]
+                ,REPLACE(Subfield('$(File)', '/', -1)
+                	,'.' & Subfield(Subfield('$(File)', '/', -1), '.', -1)
+                    ,'')													AS [FileNameNoExt]
+                
+            AutoGenerate 1;
+
+        next File
+
+    next Ext
+    for each Dir in dirlist (Root&'\*' )
+
+        call ListFile (Dir, tableName)
+
+    next Dir
+
+end sub
+
+//this defines a function that you can use to keep code more compact.  The $1-$3 are placeholders
+//for the variables you pass in, in this case YYYY, M, and D.
+set vGetDateFromYYYYMD = Date(Date#($1 & '-' & $2 & '-' & $3, 'YYYY-M-D'), 'MM/DD/YYYY');
+
+//this is the connection we created, we're going to pass it in to the 
+SET vAscpLibFolder = 'lib://FLDR_Supply_Chain_Truck_NA_Safe_Stock_Overview/';
+
+SET vFileNamePrefix = 'ASCP SafetyStock Overview_';
+LET vTodaysASCP = DATE(TODAY(), 'YYYY_M_D');
+SET vExtension = '.txt';
+
+
+TRACE $(vTodaysASCP);
+
+LET vMostRecentFileName = '$(vAscpLibFolder)' & '$(vFileNamePrefix)' & '$(vTodaysASCP)' & '$(vExtension)';
+TRACE $(vMostRecentFileName);
+
+//check if the file exists or not with the guessed filename based on today's date above, if it exists
+//then we can skip looping over all the files in the directory.
+IF IsNull(FileSize('[$(vMostRecentFileName)]')) = 0 THEN	//-1 = true 0 = false, but it's isnull? false
+	SET vFileExists ='true';
+ELSE
+	SET vFileExists ='false';
+ENDIF; 
+   
+TRACE $(vFileExists);   
+   
+//EXIT SCRIPT;
+
+//if the file we assumed would exist doesn't, then look for the most recent file.
+IF $(vFileExists) = 'false' THEN
+	TRACE The file was not found $(vMostRecentFileName), looking for file.;
+		//call the sub, passing in the library connection and a name for the table we're going to put the file info into.
+	CALL ListFile('$(vAscpLibFolder)', 'FilesTable');
+
+	//this is called a preceeding load, this allows us to immediately read in the table below it and do some more work.
+	//(in some cases eliminates the need for creating multiple tables to do more work on the data)
+	[File Table]:
+	LOAD *
+		//calling the function we made, this is overkill, but illustrates a couple concepts in one go.
+		,$(vGetDateFromYYYYMD([Year], [Month], [Day]))	AS [FileExportDate]
+	;
+	
+		//this is going to be read in and then immediately processed by the above statement, which will add the FileExportDate
+		//based on the Year, Month, and Day columns we added below.
+		NOCONCATENATE
+		LOAD *
+			//,SUBFIELD(SUBFIELD([FileNameNoExt], '_'), '.')		AS DateParts
+			//,REPLACE([FileName], '.' & [FileExt], '')			AS ReplaceExt
+			//,SUBFIELD([FileNameNoExt], '_', 1)					AS [Subfield_1]
+			,SUBFIELD([FileNameNoExt], '_', 2)					AS [Year]
+			,SUBFIELD([FileNameNoExt], '_', 3)					AS [Month]
+			,SUBFIELD([FileNameNoExt], '_', 4)					AS [Day]
+			//this can't work here because in the context of when this is called, there is no column to subfield on.
+			//,$(vGetDateFromYYYYMD(SUBFIELD([FileNameNoExt], '_', 2), SUBFIELD([FileNameNoExt], '_', 3), SUBFIELD([FileNameNoExt], '_', 4)))	AS [FileExportDate]
+		RESIDENT [FilesTable]
+		//there's lots of files in the folder, we only want the ones matching the pattern below.  will be fine until the year 2100
+		WHERE [FileName] LIKE '*ASCP SafetyStock Overview_20*.txt'	//today's file = ASCP SafetyStock Overview_2022_9_20.txt
+		;
+
+	//we're done with the original table.
+	DROP TABLE [FilesTable];
+
+	[TempMostRecentFile]:
+	NOCONCATENATE
+	FIRST 1
+	LOAD [FileFullName]
+		,[FileExportDate]
+	RESIDENT [File Table]
+	ORDER BY [FileExportDate] DESC;
+
+	//now we're done with this table too.
+	DROP TABLE [File Table];
+
+	//we want to use the peek function to look at row 1 of the table we just created above
+	LET vMostRecentFileName = PEEK('FileFullName', 0, 'TempMostRecentFile');
+    LET vTodaysASCP = DATE(PEEK('FileExportDate', 0, 'TempMostRecentFile'), 'YYYY_M_D');
+
+	//trace command lets us print the variable after evaluation $() to the data load output.
+	TRACE $(vMostRecentFileName);
+
+	DROP TABLE [TempMostRecentFile];
+ELSE
+	TRACE Found the file we guessed would exist, $(vMostRecentFileName), so we skipped looking for it.;
+ENDIF;
+
+
+//Now we can load the ASCP data...
+
+//QUALIFY *;
+
+[ASCPOverview]:
+LOAD
+    ORG
+    ,ITEM_NAME
+    ,VENDOR
+    
+    ,INSTANCE
+	//,INVENTORY_ITEM_ID
+	//,ITEM_NAME					AS [ASCP.ITEM_NUMBER]
+	,DESCRIPTION				AS [ITEM DESCRIPTION]
+	,MAKE_BUY
+	,INVENTORY_CATEGORY
+	,GLOBAL_CATEGORY
+	,PLANNER_CODE
+	,INV_TYPE
+	,PLANNER
+	,VEN#
+	,POSTPRO_LT
+	,PLT
+	,GRS_DMD_5D
+	,GRS_DMD_10D
+	,GRS_DMD_15D
+	,GRS_DMD_30D
+	,GRS_DMD_60D
+	,GRS_DMD_90D
+    ,IF(ISNULL(GRS_DMD_90D), 'Ignore Item', 'Count Item')	AS CountItemFlag
+	,INTRANSIT_QTY_5D
+	,INTRANSIT_QTY_10D
+	,INTRANSIT_QTY_15D
+	,INTRANSIT_QTY_30D
+	,INTRANSIT_QTY_60D
+	,INTRANSIT_QTY_90D
+	,SS_TYPE
+	,FIRST_SRTAGE
+	,IF(DOH_CAL > 100, 100, DOH_CAL)						AS DOH_CAL
+	,SS_QTY
+	,SS_VALUE
+	,SS_PERCENT
+	,SS_BUCKET_DAYS
+	,NET_QOH
+	,NET_QOH_VALUE
+	,POC_QOH
+	,SS_PERCENT_ACHIVED
+	,EXCESS_QTY
+//and always FROM the most recent file matching the pattern:
+FROM [$(vMostRecentFileName)]
+(txt, codepage is 28591, embedded labels, delimiter is '|', msq)
+WHERE Match(ITEM_NAME, 'A2 3200M1885', 'A2 3200C1979') = 0
+AND Match(ORG, 'ASH', 'FOR') > 0
+;
+
+
+//unQUALIFY *;
+
+//exit script;
+
+LET vToday = DATE(DATE#('$(vTodaysASCP)', 'YYYY_M_D'), 'MM/DD/YYYY');
+SET vTodaysASCP=$(vToday);
+
