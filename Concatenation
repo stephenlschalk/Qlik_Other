@@ -1,0 +1,78 @@
+// Pulls a snapshot from Oracle and appends to an existing Excel doc on Sharepoint with historical trend data
+
+PastDuePOs:
+//Loads current past due snapshot from the Supply Chain DW
+//HC_PastDuePOs is one of the health check (HC) tables created for 'Supply Chain Truck NA' stream of Qlik
+//HC_PastDuePOs is also used in the dashboard Health Check [#1016]
+
+
+Load 	 
+   OrganizationID &'|'& PartNumber AS DimItemKey
+  ,date(SnapshotDate1,'MM/DD/YYYY') AS SnapshotDate
+  ,OrganizationID
+  ,OrganizationCode
+  ,OrganizationName
+  ,PartNumber
+  ,DueDate
+  ,PlannerCode
+  ,PlannerName
+  ,OrderType
+  ,OrderNumber
+  ,Quantity
+  ,Vendor
+;
+
+SELECT
+  GETDATE() AS SnapshotDate1
+  ,src.OrganizationID
+  ,src.OrganizationCode
+  ,src.OrganizationName
+  ,src.PartNumber
+  ,src.DueDate
+  ,src.PlannerCode
+  ,pln.PlannerName
+  ,src.ORDER_TYPE AS OrderType
+  ,src.ORDER_NUMBER as OrderNumber
+  ,src.QUANTITY as Quantity
+  ,src.VENDOR as Vendor
+FROM
+  [MeritorBI_DW].[supplychain].[HC_PastDuePOs] 	src
+  left outer Join [MeritorBI_DW].[supplychain].[DimPlanner] Pln on src.[PlannerKey] = Pln.[PlannerKey] 
+WHERE 
+  1=1
+  ;
+
+//Concatenating the trend/historical data onto this table
+//Kevin periodcally exports the Past Due Purchase Orders and Reqs portion of the current Inventory Health Check [#1016] and saves it here
+//for trend analysis
+
+CONCATENATE(PastDuePOs)
+Load 
+	 OrganizationID &'|'& PartNumber AS DimItemKey
+	,date(SnapshotDate,'MM/DD/YYYY') AS SnapshotDate
+    ,OrganizationID
+    ,OrganizationCode
+    ,OrganizationName
+    ,PartNumber
+    ,DueDate
+    ,PlannerCode
+    ,PlannerName
+    ,OrderType
+    ,OrderNumber
+    ,Quantity
+    ,Vendor
+FROM [lib://SP365-XLS_SC_CMPPastDue_Data]
+(ooxml, embedded labels, table is [Main Data]);
+
+
+[DimItem]:
+Load
+	 OrganizationID &'|'& PartNumber as DimItemKey
+    ,StdCost 
+;
+SELECT  
+	OrganizationID 
+	,PartNumber
+    ,StdCost 
+FROM [MeritorBI_DW].[supplychain].[DimItem]
+  ;
